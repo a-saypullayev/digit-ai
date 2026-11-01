@@ -188,6 +188,9 @@ async def receive_character(
         message = "".join(message_buffer)
         message_buffer.clear()
 
+        global last_received_message
+        last_received_message = message
+
         print("USER MESSAGE:", message)
 
         # Ask Groq without blocking the async server.
