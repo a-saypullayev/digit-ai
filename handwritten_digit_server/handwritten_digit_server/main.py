@@ -128,7 +128,9 @@ def ask_groq(message):
 
     except Exception as error:
         conversation.pop()
-        return "GROQ ERROR: " + str(error)
+        latest_answer = "GROQ ERROR: " + str(error)
+        latest_answer_codes = []
+        return latest_answer
 
 
 # -----------------------------
