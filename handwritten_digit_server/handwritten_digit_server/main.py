@@ -1,4 +1,4 @@
-
+from fastapi.responses import StreamingResponse
 import os
 import re
 import asyncio
@@ -210,4 +210,19 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 10000))
+    )
+
+
+@app.get("/result/stream")
+async def result_stream():
+    async def generate():
+        for code in latest_answer_codes:
+            yield code + "\n"
+            await asyncio.sleep(0.1)
+
+        yield END_CODE + "\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/plain"
     )
