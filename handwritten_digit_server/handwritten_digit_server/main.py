@@ -14,7 +14,7 @@ app = FastAPI(title="Build a Logic Groq AI")
 # SETTINGS
 # -----------------------------
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "openai/gpt-oss-20b"
 END_CODE = "11111111"
 MAX_MESSAGE_LENGTH = 2000
 
