@@ -1,11 +1,12 @@
-from fastapi.responses import StreamingResponse
+
 import os
 import re
 import asyncio
+import time
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from groq import Groq
 
 app = FastAPI(title="Binary Groq AI")
@@ -13,6 +14,7 @@ app = FastAPI(title="Binary Groq AI")
 MODEL = "openai/gpt-oss-20b"
 END_CODE = "11111111"
 MAX_MESSAGE_LENGTH = 2000
+CHARACTER_DELAY = 0.1
 
 ALPHABET = {
     "00000000": " ",
@@ -49,12 +51,17 @@ REVERSE_ALPHABET = {v: k for k, v in ALPHABET.items()}
 message_buffer = []
 latest_answer_codes = []
 
+output_index = 0
+response_ready = False
+last_output_time = 0.0
+
 conversation = [
     {
         "role": "system",
         "content": (
             "You are a helpful AI assistant inside a game. "
-            "Reply clearly, naturally, and briefly."
+            "Reply clearly, naturally, and briefly. "
+            "Use simple language."
         )
     }
 ]
@@ -72,9 +79,14 @@ def encode_answer(answer):
 
 def ask_groq(message):
     global latest_answer_codes
+    global output_index
+    global response_ready
+    global last_output_time
 
     try:
-        client = Groq(api_key=os.environ["GROQ_API_KEY"])
+        client = Groq(
+            api_key=os.environ["GROQ_API_KEY"]
+        )
 
         messages = conversation + [
             {"role": "user", "content": message}
@@ -87,7 +99,10 @@ def ask_groq(message):
             max_completion_tokens=150
         )
 
-        answer = result.choices[0].message.content or "NO ANSWER"
+        answer = (
+            result.choices[0].message.content
+            or "NO ANSWER"
+        )
 
         conversation.append({
             "role": "user",
@@ -107,6 +122,10 @@ def ask_groq(message):
     except Exception as error:
         print("GROQ ERROR:", error)
         latest_answer_codes = encode_answer("AI ERROR")
+
+    output_index = 0
+    response_ready = True
+    last_output_time = 0.0
 
 
 async def read_value(request):
@@ -129,61 +148,111 @@ async def read_value(request):
 @app.post("/receive/1")
 async def receive(request: Request):
     global message_buffer
-    global latest_answer_codes
+    global response_ready
+    global output_index
 
     value = (await read_value(request)).strip()
 
     if not re.fullmatch(r"[01]{8}", value):
-        return JSONResponse(
-            {"codes": [END_CODE]}
-        )
+        return JSONResponse({
+            "value": END_CODE
+        })
 
     if value == END_CODE:
         if not message_buffer:
             return JSONResponse({
-                "codes": [END_CODE]
+                "value": END_CODE
             })
 
         message = "".join(message_buffer)
         message_buffer = []
 
-        await asyncio.to_thread(ask_groq, message)
+        response_ready = False
+        output_index = 0
+
+        await asyncio.to_thread(
+            ask_groq, message
+        )
 
         return JSONResponse({
-            "codes": latest_answer_codes,
-            "end_code": END_CODE
+            "value": "00000000"
         })
 
     character = ALPHABET.get(value)
 
     if character is None:
         return JSONResponse({
-            "codes": [END_CODE]
+            "value": END_CODE
         })
 
     if len(message_buffer) < MAX_MESSAGE_LENGTH:
         message_buffer.append(character)
 
     return JSONResponse({
-        "codes": [value]
+        "value": value
     })
 
 
 @app.get("/result/codes")
-def result_codes():
+async def result_codes():
+    global output_index
+    global last_output_time
+
+    if not response_ready:
+        return JSONResponse({
+            "value": "00000000"
+        })
+
+    now = time.monotonic()
+
+    if last_output_time and now - last_output_time < CHARACTER_DELAY:
+        return JSONResponse({
+            "value": "00000000"
+        })
+
+    if output_index < len(latest_answer_codes):
+        code = latest_answer_codes[output_index]
+        output_index += 1
+        last_output_time = now
+
+        return JSONResponse({
+            "value": code
+        })
+
     return JSONResponse({
-        "codes": latest_answer_codes,
-        "end_code": END_CODE
+        "value": END_CODE
     })
+
+
+@app.get("/result/stream")
+async def result_stream():
+    async def generate():
+        for code in latest_answer_codes:
+            yield code + "\n"
+            await asyncio.sleep(CHARACTER_DELAY)
+
+        yield END_CODE + "\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/plain"
+    )
 
 
 @app.post("/reset")
 def reset():
     global message_buffer
+    global latest_answer_codes
+    global output_index
+    global response_ready
+
     message_buffer = []
+    latest_answer_codes = []
+    output_index = 0
+    response_ready = False
 
     return JSONResponse({
-        "codes": ["00000000"]
+        "value": "00000000"
     })
 
 
@@ -210,19 +279,4 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 10000))
-    )
-
-
-@app.get("/result/stream")
-async def result_stream():
-    async def generate():
-        for code in latest_answer_codes:
-            yield code + "\n"
-            await asyncio.sleep(0.1)
-
-        yield END_CODE + "\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/plain"
     )
