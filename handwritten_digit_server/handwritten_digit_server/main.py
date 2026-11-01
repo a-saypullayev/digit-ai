@@ -8,11 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from groq import Groq
 
-app = FastAPI(title="Build a Logic Groq AI")
-
-# -----------------------------
-# SETTINGS
-# -----------------------------
+app = FastAPI(title="Binary Groq AI")
 
 MODEL = "openai/gpt-oss-20b"
 END_CODE = "11111111"
@@ -50,256 +46,168 @@ ALPHABET = {
 
 REVERSE_ALPHABET = {v: k for k, v in ALPHABET.items()}
 
-# -----------------------------
-# MEMORY
-# -----------------------------
-
 message_buffer = []
+latest_answer_codes = []
+
 conversation = [
     {
         "role": "system",
         "content": (
             "You are a helpful AI assistant inside a game. "
-            "Reply clearly and naturally. "
-            "Use simple language."
+            "Reply clearly, naturally, and briefly."
         )
     }
 ]
 
-latest_answer = ""
-latest_answer_codes = []
-last_received_message = ""
 
-# -----------------------------
-# GROQ
-# -----------------------------
+def encode_answer(answer):
+    clean = re.sub(r"[^A-Z ]", " ", answer.upper())
+    clean = " ".join(clean.split())
+
+    return [
+        REVERSE_ALPHABET[character]
+        for character in clean
+    ]
+
 
 def ask_groq(message):
-    global latest_answer
     global latest_answer_codes
-    global last_received_message
-
-    api_key = os.getenv("GROQ_API_KEY")
-
-    if not api_key:
-        return "ERROR GROQ API KEY IS MISSING"
-
-    client = Groq(api_key=api_key)
-
-    conversation.append({
-        "role": "user",
-        "content": message
-    })
 
     try:
-        completion = client.chat.completions.create(
+        client = Groq(api_key=os.environ["GROQ_API_KEY"])
+
+        messages = conversation + [
+            {"role": "user", "content": message}
+        ]
+
+        result = client.chat.completions.create(
             model=MODEL,
-            messages=conversation,
+            messages=messages,
             temperature=0.7,
-            max_completion_tokens=300
+            max_completion_tokens=150
         )
 
-        answer = completion.choices[0].message.content or ""
+        answer = result.choices[0].message.content or "NO ANSWER"
+
+        conversation.append({
+            "role": "user",
+            "content": message
+        })
 
         conversation.append({
             "role": "assistant",
             "content": answer
         })
 
-        # Keep conversation memory from growing forever.
         if len(conversation) > 21:
             del conversation[1:3]
 
-        latest_answer = answer
-
-        # Our alphabet only supports A-Z and spaces.
-        clean_answer = answer.upper()
-        clean_answer = re.sub(r"[^A-Z ]", " ", clean_answer)
-        clean_answer = " ".join(clean_answer.split())
-
-        latest_answer_codes = [
-            REVERSE_ALPHABET[character]
-            for character in clean_answer
-        ]
-
-        last_received_message = message
-
-        return answer
+        latest_answer_codes = encode_answer(answer)
 
     except Exception as error:
-        conversation.pop()
-        latest_answer = "GROQ ERROR: " + str(error)
-        latest_answer_codes = []
-        return latest_answer
+        print("GROQ ERROR:", error)
+        latest_answer_codes = encode_answer("AI ERROR")
 
 
-# -----------------------------
-# READ TRANSMITTER DATA
-# -----------------------------
+async def read_value(request):
+    body = (await request.body()).decode(
+        "utf-8", errors="ignore"
+    )
 
-async def read_value(request: Request):
-    body = (await request.body()).decode("utf-8", errors="ignore")
+    data = parse_qs(body)
 
-    # Build a Logic uses application/x-www-form-urlencoded.
-    form_data = parse_qs(body)
-    if "value" in form_data:
-        return form_data["value"][0]
+    if "value" in data:
+        return data["value"][0]
 
-    # Also accept JSON, if supported by a different transmitter.
     try:
         data = await request.json()
         return str(data.get("value", ""))
     except Exception:
-        pass
-
-    # Also accept a query parameter.
-    return request.query_params.get("value", "")
+        return request.query_params.get("value", "")
 
 
-# -----------------------------
-# RECEIVE ONE CHARACTER
-# -----------------------------
-
-@app.post("/receive/{transmitter_id}")
-async def receive_character(
-    transmitter_id: int,
-    request: Request
-):
-    global latest_answer
+@app.post("/receive/1")
+async def receive(request: Request):
+    global message_buffer
+    global latest_answer_codes
 
     value = (await read_value(request)).strip()
 
     if not re.fullmatch(r"[01]{8}", value):
         return JSONResponse(
-            status_code=400,
-            content={
-                "status": "error",
-                "message": "Expected exactly 8 binary digits",
-                "received": value
-            }
+            {"codes": [END_CODE]}
         )
 
-    # End of message!
     if value == END_CODE:
         if not message_buffer:
-            return {
-                "status": "error",
-                "message": "Message is empty"
-            }
+            return JSONResponse({
+                "codes": [END_CODE]
+            })
 
         message = "".join(message_buffer)
-        message_buffer.clear()
+        message_buffer = []
 
-        global last_received_message
-        last_received_message = message
+        await asyncio.to_thread(ask_groq, message)
 
-        print("USER MESSAGE:", message)
+        return JSONResponse({
+            "codes": latest_answer_codes,
+            "end_code": END_CODE
+        })
 
-        # Ask Groq without blocking the async server.
-        answer = await asyncio.to_thread(ask_groq, message)
-
-        print("GROQ ANSWER:", answer)
-
-        return {
-            "status": "complete",
-            "message": message,
-            "answer": answer,
-            "answer_codes": latest_answer_codes
-        }
-
-    # Decode character.
     character = ALPHABET.get(value)
 
     if character is None:
-        return {
-            "status": "error",
-            "message": "Unknown character code"
-        }
+        return JSONResponse({
+            "codes": [END_CODE]
+        })
 
-    if len(message_buffer) >= MAX_MESSAGE_LENGTH:
-        message_buffer.clear()
-        return {
-            "status": "error",
-            "message": "Message too long. Buffer cleared."
-        }
+    if len(message_buffer) < MAX_MESSAGE_LENGTH:
+        message_buffer.append(character)
 
-    message_buffer.append(character)
-
-    print(
-        f"Transmitter {transmitter_id}: "
-        f"{value} -> {character}"
-    )
-
-    return {
-        "status": "receiving",
-        "character": character,
-        "characters_received": len(message_buffer)
-    }
-
-
-# -----------------------------
-# GET AI ANSWER
-# -----------------------------
-
-@app.get("/result")
-def get_result():
-    return {
-        "message": last_received_message,
-        "answer": latest_answer
-    }
+    return JSONResponse({
+        "codes": [value]
+    })
 
 
 @app.get("/result/codes")
-def get_result_codes():
-    return {
-        "answer": latest_answer,
+def result_codes():
+    return JSONResponse({
         "codes": latest_answer_codes,
         "end_code": END_CODE
-    }
+    })
 
-
-# -----------------------------
-# RESET MESSAGE BUFFER
-# -----------------------------
 
 @app.post("/reset")
-def reset_message():
-    message_buffer.clear()
+def reset():
+    global message_buffer
+    message_buffer = []
 
-    return {
-        "status": "reset"
-    }
-
-
-# -----------------------------
-# HEALTH CHECK
-# -----------------------------
-
-@app.get("/")
-def home():
-    return {
-        "status": "online",
-        "name": "Build a Logic Groq AI"
-    }
+    return JSONResponse({
+        "codes": ["00000000"]
+    })
 
 
 @app.get("/health")
 def health():
     return {
         "status": "ok",
-        "groq_key_configured": bool(os.getenv("GROQ_API_KEY")),
-        "model": MODEL,
-        "characters": len(ALPHABET),
-        "buffer_length": len(message_buffer)
+        "groq_key_configured": bool(
+            os.getenv("GROQ_API_KEY")
+        ),
+        "model": MODEL
     }
 
 
-# -----------------------------
-# START SERVER
-# -----------------------------
+@app.get("/")
+def home():
+    return {"status": "online"}
+
 
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000))
+    )
