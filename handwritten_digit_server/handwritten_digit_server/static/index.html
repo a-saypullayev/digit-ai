@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Digit Brain — 1 to 9</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101522;color:#edf2ff;font:16px system-ui;display:grid;place-items:center;min-height:100vh;padding:20px}
+main{width:min(560px,100%);background:#1a2335;padding:24px;border:1px solid #33415d;border-radius:18px}
+h1{margin:0 0 6px;font-size:27px}p{color:#aab8d1;line-height:1.5}
+canvas{display:block;width:min(360px,100%);aspect-ratio:1;background:#05070b;border:2px solid #53617a;border-radius:12px;touch-action:none;margin:18px auto;image-rendering:pixelated}
+.controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+button,select{border:0;border-radius:10px;padding:12px 16px;font-weight:700;background:#344563;color:white;cursor:pointer}
+button.primary{background:#3978ee}button.train{background:#13865e}
+#result{margin-top:18px;padding:15px;background:#111a2a;border-radius:12px;min-height:70px}
+#big{font-size:36px;font-weight:800}small{color:#aab8d1}
+</style>
+</head>
+<body><main>
+<h1>🧠 Digit Brain</h1>
+<p>Draw a handwritten digit from <b>1 to 9</b>. The picture is converted into 324 grayscale pixel values and sent to the neural network.</p>
+<canvas id="board" width="18" height="18"></canvas>
+<div class="controls">
+<button id="clear">Clear</button>
+<button class="primary" id="predict">Recognize</button>
+<select id="label" aria-label="Correct digit">
+<option value="1">Correct digit: 1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option>
+</select>
+<button class="train" id="train">Teach / Train</button>
+</div>
+<div id="result">Draw a digit, then press Recognize.</div>
+<p><small>Tip: Train it with many different handwriting examples for each digit. One example is not enough for reliable recognition.</small></p>
+</main>
+<script>
+const canvas=document.getElementById('board'), ctx=canvas.getContext('2d',{willReadFrequently:true});
+ctx.fillStyle='#000';ctx.fillRect(0,0,18,18);
+ctx.strokeStyle='#fff';ctx.lineWidth=2.2;ctx.lineCap='round';ctx.lineJoin='round';
+let drawing=false, last=null;
+function pos(e){const r=canvas.getBoundingClientRect();return {x:(e.clientX-r.left)*18/r.width,y:(e.clientY-r.top)*18/r.height};}
+canvas.addEventListener('pointerdown',e=>{drawing=true;last=pos(e);canvas.setPointerCapture(e.pointerId);ctx.beginPath();ctx.arc(last.x,last.y,1.1,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();});
+canvas.addEventListener('pointermove',e=>{if(!drawing)return;const p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;});
+for(const ev of ['pointerup','pointercancel','lostpointercapture'])canvas.addEventListener(ev,()=>drawing=false);
+function pixels(){const d=ctx.getImageData(0,0,18,18).data, a=[];for(let i=0;i<d.length;i+=4)a.push(d[i]/255);return a;}
+async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw Error(j.detail||'Request failed');return j;}
+const result=document.getElementById('result');
+document.getElementById('clear').onclick=()=>{ctx.fillStyle='#000';ctx.fillRect(0,0,18,18);result.textContent='Canvas cleared.';};
+document.getElementById('predict').onclick=async()=>{try{result.textContent='Thinking...';const j=await post('/predict',{pixels:pixels()});result.innerHTML=`<div id="big">${j.digit}</div>Confidence: ${(j.confidence*100).toFixed(1)}%`; }catch(e){result.textContent=e.message;}};
+document.getElementById('train').onclick=async()=>{try{result.textContent='Training...';const j=await post('/train',{pixels:pixels(),label:Number(document.getElementById('label').value),epochs:5});result.textContent=`${j.message} Total examples: ${j.examples}. Average loss: ${j.average_batch_loss}`;}catch(e){result.textContent=e.message;}};
+</script></body></html>
